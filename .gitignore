@@ -1,0 +1,90 @@
+# ==============================================================================
+# CueGrid Pro - Git Ignore Configuration
+# ==============================================================================
+
+# Python Bytecode and Caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environments (CRITICAL: Do NOT commit environments)
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+CueGridPro/.venv/
+
+# PyInstaller & Build Outputs (CRITICAL: Do NOT commit compiled binaries)
+/build/
+build/bdist.*/
+build/lib.*/
+CueGridPro/build/CueGridPro/
+!CueGridPro/build/*.py
+!CueGridPro/build/*.bat
+dist/
+CueGridPro/dist/
+*.spec
+*.manifest
+*.dist-info/
+*.egg-info/
+*.egg
+
+# Secrets & Environment Variables (CRITICAL: Security protection)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.token
+*secret*
+*credential*
+
+# Windows System Files & Shortcuts
+# Note: .lnk files contain local machine absolute paths and should NOT be committed.
+*.lnk
+[Dd]esktop.ini
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+$RECYCLE.BIN/
+
+# macOS System Files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor & IDE Directories
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# Audio and Test Artifacts (keep repository lightweight)
+*.wav
+*.mp3
+*.flac
+*.aif
+*.aiff
+*.m4a
+*.ogg
+test_track_*.wav
+test_track_*.mp3
+*.xml
+!rekordbox_sample.xml
+
+# Logs and Temporary Files
+*.log
+*.tmp
+temp/
+tmp/
+*.sqlite
+*.sqlite3

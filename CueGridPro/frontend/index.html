@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rekordbox Auto Cue Generator</title>
+  <link rel="icon" type="image/png" href="/static/icon.png">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Header -->
+  <header class="app-header">
+    <div class="logo-area">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor"/>
+          <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>
+        </svg>
+      </div>
+      <div>
+        <h1 class="logo-title">CueGrid Pro <span class="badge-dj">Rekordbox</span></h1>
+        <p class="logo-subtitle">Автоматическая расстановка Hot Cues и Memory Cues по барам</p>
+      </div>
+    </div>
+    
+    <div class="header-actions">
+      <button id="btnGuide" class="btn btn-secondary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="icon-sm">
+          <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        Инструкция для Rekordbox
+      </button>
+      <button id="btnExportXml" class="btn btn-primary" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="icon-sm">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        Экспорт в rekordbox.xml (<span id="exportCount">0</span>)
+      </button>
+    </div>
+  </header>
+
+  <main class="app-container">
+    <!-- Settings Section -->
+    <section class="settings-card">
+      <div class="settings-header">
+        <div class="settings-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="icon-md">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          <h2>Параметры расстановки точек</h2>
+        </div>
+        <button id="btnApplyAll" class="btn btn-sm btn-accent" title="Применить текущие настройки ко всем загруженным трекам">
+          ⚡ Пересчитать для всех треков
+        </button>
+      </div>
+
+      <div class="settings-grid">
+        <!-- Bar Interval -->
+        <div class="setting-item">
+          <label class="setting-label">
+            Интервал баров (тактов)
+            <span class="tooltip" title="Шаг расстановки точек. Например, 16 или 32 бара — стандартная структура треков в EDM / House / Techno.">ⓘ</span>
+          </label>
+          <div class="interval-selector">
+            <button type="button" class="btn-pill" data-interval="8">8 баров</button>
+            <button type="button" class="btn-pill active" data-interval="16">16 баров</button>
+            <button type="button" class="btn-pill" data-interval="32">32 бара</button>
+            <button type="button" class="btn-pill" data-interval="64">64 бара</button>
+            <div class="custom-interval">
+              <input type="number" id="customIntervalInput" min="1" max="128" placeholder="Свой">
+              <span>б</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- BPM Range -->
+        <div class="setting-item">
+          <label class="setting-label">
+            Диапазон анализа BPM
+            <span class="tooltip" title="Ограничивает темп при анализе, предотвращая ошибки определения вдвое (x2) или вполовину (/2).">ⓘ</span>
+          </label>
+          <div class="bpm-range-control">
+            <select id="bpmRangeSelect" class="form-select">
+              <option value="60-180" selected>60 — 180 BPM (Авто / Стандарт)</option>
+              <option value="115-160">115 — 160 BPM (House / Techno)</option>
+              <option value="70-140">70 — 140 BPM (Hip-Hop / Trap / Dubstep)</option>
+              <option value="90-180">90 — 180 BPM (D&B / Bass / Breaks)</option>
+              <option value="130-190">130 — 190 BPM (Hardstyle / Psy / Rave)</option>
+              <option value="custom">Свой диапазон...</option>
+            </select>
+            <div id="customBpmRangeWrap" class="custom-bpm-inputs hidden">
+              <input type="number" id="minBpmInput" min="30" max="300" placeholder="Min" value="60" class="input-num-sm" title="Минимальный BPM">
+              <span class="range-dash">—</span>
+              <input type="number" id="maxBpmInput" min="40" max="350" placeholder="Max" value="180" class="input-num-sm" title="Максимальный BPM">
+            </div>
+          </div>
+        </div>
+
+        <!-- Cue Type -->
+        <div class="setting-item">
+          <label class="setting-label">
+            Тип меток в Rekordbox
+            <span class="tooltip" title="Hot Cues: цветные кнопки A-H на пэдах. Memory Cues: точки памяти для обратного отсчета баров.">ⓘ</span>
+          </label>
+          <select id="cueModeSelect" class="form-select">
+            <option value="both" selected>Hot Cues + Memory Cues (Рекомендуется)</option>
+            <option value="hot_cues">Только Hot Cues (A-H кнопки)</option>
+            <option value="memory_cues">Только Memory Cues (Точки памяти)</option>
+          </select>
+        </div>
+
+        <!-- Naming Template -->
+        <div class="setting-item">
+          <label class="setting-label">
+            Название меток
+            <span class="tooltip" title="Шаблон текста для отображения в Rekordbox и на экранах CDJ">ⓘ</span>
+          </label>
+          <select id="namingTemplateSelect" class="form-select">
+            <option value="{bar} Bars" selected>0 Bars, 16 Bars, 32 Bars...</option>
+            <option value="Bar {bar_num}">Bar 1, Bar 17, Bar 33...</option>
+            <option value="structure">Intro, Build, Drop, Break...</option>
+            <option value="{cue_letter} - {bar}b">A - 0b, B - 16b, C - 32b...</option>
+          </select>
+        </div>
+
+        <!-- Max Hot Cues -->
+        <div class="setting-item">
+          <label class="setting-label">
+            Макс. Hot Cues (A-H)
+            <span class="tooltip" title="Количество Hot Cues. Rekordbox поддерживает 8 (A-H) или 16 (A-P)">ⓘ</span>
+          </label>
+          <select id="maxHotCuesSelect" class="form-select">
+            <option value="8" selected>8 точек (Банк 1: A-H)</option>
+            <option value="16">16 точек (Банки 1 и 2: A-P)</option>
+            <option value="4">4 точки (A-D)</option>
+            <option value="0">Без ограничений</option>
+          </select>
+        </div>
+
+
+
+        <!-- Max Memory Cues -->
+        <div class="setting-item">
+          <label class="setting-label">
+            Макс. Memory Cues
+            <span class="tooltip" title="Лимит количества точек памяти (Memory Cue). Стандарт Rekordbox — до 8 точек.">ⓘ</span>
+          </label>
+          <select id="maxMemoryCuesSelect" class="form-select">
+            <option value="8" selected>8 точек (Стандарт Rekordbox)</option>
+            <option value="16">16 точек</option>
+            <option value="4">4 точки</option>
+            <option value="0">Без ограничений</option>
+          </select>
+        </div>
+
+        <!-- XML Export Options Group -->
+        <div class="setting-item full-width-setting">
+          <label class="setting-label">
+            Параметры экспорта .XML файла
+            <span class="tooltip" title="Выберите, какие именно данные будут включены в сгенерированный файл для Rekordbox">ⓘ</span>
+          </label>
+          <div class="export-options-grid">
+            <label class="export-checkbox-card" title="Экспортировать теги TEMPO и разметку тактовой сетки">
+              <input type="checkbox" id="chkExportBeatgrid" checked>
+              <div class="checkbox-indicator"></div>
+              <div class="checkbox-text">
+                <span class="checkbox-title">Сетка трека (Beatgrid)</span>
+                <span class="checkbox-desc">Теги &lt;TEMPO&gt; и доли такта</span>
+              </div>
+            </label>
+
+            <label class="export-checkbox-card" title="Экспортировать значение BPM в метаданных трека">
+              <input type="checkbox" id="chkExportBpm" checked>
+              <div class="checkbox-indicator"></div>
+              <div class="checkbox-text">
+                <span class="checkbox-title">Темп трека (BPM)</span>
+                <span class="checkbox-desc">Атрибут AverageBpm трека</span>
+              </div>
+            </label>
+
+            <label class="export-checkbox-card" title="Экспортировать горячие точки A-H (кнопки на пэдах)">
+              <input type="checkbox" id="chkExportHotCues" checked>
+              <div class="checkbox-indicator"></div>
+              <div class="checkbox-text">
+                <span class="checkbox-title">Hot Cues (Кнопки A-H)</span>
+                <span class="checkbox-desc">Метки быстрого запуска (Num 0..7)</span>
+              </div>
+            </label>
+
+            <label class="export-checkbox-card" title="Экспортировать точки памяти для обратного отсчета баров">
+              <input type="checkbox" id="chkExportMemoryCues" checked>
+              <div class="checkbox-indicator"></div>
+              <div class="checkbox-text">
+                <span class="checkbox-title">Memory Cues (Точки памяти)</span>
+                <span class="checkbox-desc">Метки памяти (Num -1)</span>
+              </div>
+            </label>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Drop Zone Area -->
+    <section class="drop-zone" id="dropZone">
+      <div class="drop-zone-content">
+        <div class="upload-icon-wrapper">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="upload-icon">
+            <path d="M9 18V5l12-2v13"/>
+            <circle cx="6" cy="18" r="3"/>
+            <circle cx="18" cy="16" r="3"/>
+          </svg>
+        </div>
+        <h3 class="drop-title">Перетащите музыкальные треки сюда</h3>
+        <p class="drop-subtitle">Поддерживаются: MP3, WAV, FLAC, AIFF, M4A, OGG</p>
+        
+        <div class="drop-actions">
+          <button id="btnBrowseFiles" class="btn btn-primary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="icon-sm">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+            </svg>
+            Выбрать файлы треков
+          </button>
+          <button id="btnBrowseFolder" class="btn btn-secondary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="icon-sm">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+            Выбрать папку с музыкой
+          </button>
+        </div>
+
+        <input type="file" id="fileInput" multiple accept=".mp3,.wav,.flac,.aiff,.aif,.m4a,.ogg" style="display:none">
+      </div>
+    </section>
+
+    <!-- Analysis Progress -->
+    <div id="progressContainer" class="progress-card hidden">
+      <div class="progress-header">
+        <span id="progressStatus">Анализ аудио треков (BPM, Beatgrid, расстановка точек)...</span>
+        <span id="progressPercent">0%</span>
+      </div>
+      <div class="progress-bar-bg">
+        <div id="progressBar" class="progress-bar-fill" style="width: 0%"></div>
+      </div>
+    </div>
+
+    <!-- Tracks List Section -->
+    <section class="tracks-section" id="tracksSection">
+      <div class="tracks-header">
+        <h2>Загруженные треки (<span id="tracksCount">0</span>)</h2>
+        <div class="tracks-actions">
+          <button id="btnClearAll" class="btn btn-sm btn-danger" style="display:none">
+            Очистить список
+          </button>
+        </div>
+      </div>
+
+      <div id="tracksList" class="tracks-list">
+        <!-- Track items will be inserted here dynamically -->
+        <div class="empty-state" id="emptyState">
+          <p>Треки еще не добавлены. Закиньте аудиофайлы в область выше, чтобы начать анализ.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Rekordbox Import Instructions Modal -->
+  <div id="guideModal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Как импортировать точки в Rekordbox</h3>
+        <button id="btnCloseModal" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <ol class="guide-steps">
+          <li>
+            <div class="step-num">1</div>
+            <div class="step-desc">
+              <strong>Экспортируйте XML:</strong>
+              <p>Нажмите зеленую кнопку <strong>«Экспорт в rekordbox.xml»</strong> в верхнем правом углу CueGrid Pro и сохраните файл на компьютере (например, в Загрузки или в папку с музыкой).</p>
+            </div>
+          </li>
+          <li>
+            <div class="step-num">2</div>
+            <div class="step-desc">
+              <strong>Укажите файл в Rekordbox:</strong>
+              <p>В Rekordbox откройте меню: <strong>Настройки (Preferences / Шестерёнка) &rarr; Вкладка «Дополнительно» (Advanced) &rarr; Вкладка «База данных» (Database) &rarr; Раздел «rekordbox xml»</strong>.</p>
+              <p>Нажмите <strong>«Обзор» (Browse)</strong> и выберите сохраненный файл <code>rekordbox_auto_cues.xml</code>.</p>
+            </div>
+          </li>
+          <li>
+            <div class="step-num">3</div>
+            <div class="step-desc">
+              <strong>Импортируйте точки в коллекцию:</strong>
+              <p>В левой панели Rekordbox найдите пункт <strong>rekordbox xml</strong> (в дереве слева). Раскройте его, нажмите правой кнопкой мыши по плейлисту <strong>«Auto Cues»</strong> (или по нужным трекам) и выберите <strong>«Импортировать в коллекцию» (Import to Collection)</strong>.</p>
+              <div class="guide-tip">
+                💡 <strong>Готово!</strong> Все Hot Cues (A-H) и Memory Cues мгновенно появятся на ваших треках с идеальной тактовой сеткой.
+              </div>
+            </div>
+          </li>
+        </ol>
+      </div>
+      <div class="modal-footer">
+        <button id="btnCloseModalBtn" class="btn btn-primary">Понятно, закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
