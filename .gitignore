@@ -47,6 +47,7 @@ CueGridPro/dist/
 # Note: .lnk files contain local machine absolute paths and should NOT be committed.
 *.lnk
 push_to_github.bat
+push_to_github.ps1
 [Dd]esktop.ini
 Thumbs.db
 Thumbs.db:encryptable
