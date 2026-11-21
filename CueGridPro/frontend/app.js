@@ -14,6 +14,7 @@ const state = {
   maxMemoryCues: 8,
   minBpm: 60,
   maxBpm: 180,
+  dropAnchorMode: false,
   exportBeatgrid: true,
   exportBpm: true,
   exportHotCues: true,
@@ -23,8 +24,10 @@ const state = {
 // DOM Elements
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
+const xmlFileInput = document.getElementById('xmlFileInput');
 const btnBrowseFiles = document.getElementById('btnBrowseFiles');
 const btnBrowseFolder = document.getElementById('btnBrowseFolder');
+const btnImportXml = document.getElementById('btnImportXml');
 const progressContainer = document.getElementById('progressContainer');
 const progressBar = document.getElementById('progressBar');
 const progressPercent = document.getElementById('progressPercent');
@@ -45,6 +48,7 @@ const cueModeSelect = document.getElementById('cueModeSelect');
 const namingTemplateSelect = document.getElementById('namingTemplateSelect');
 const maxHotCuesSelect = document.getElementById('maxHotCuesSelect');
 const maxMemoryCuesSelect = document.getElementById('maxMemoryCuesSelect');
+const chkDropAnchorMode = document.getElementById('chkDropAnchorMode');
 const chkExportBeatgrid = document.getElementById('chkExportBeatgrid');
 const chkExportBpm = document.getElementById('chkExportBpm');
 const chkExportHotCues = document.getElementById('chkExportHotCues');
@@ -62,9 +66,20 @@ const btnCloseModalBtn = document.getElementById('btnCloseModalBtn');
 // -------------------------------------------------------------
 
 document.addEventListener('DOMContentLoaded', () => {
+  checkProtocolEnvironment();
   setupEventListeners();
   setupSettingsHandlers();
 });
+
+function checkProtocolEnvironment() {
+  if (window.location.protocol === 'file:') {
+    console.warn('CueGrid Pro: running via file:// protocol.');
+    const banner = document.createElement('div');
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#ef4444;color:#fff;padding:12px 18px;text-align:center;font-weight:600;font-size:14px;box-shadow:0 4px 14px rgba(0,0,0,0.5);';
+    banner.innerHTML = '⚠️ CueGrid Pro открыт как локальный файл (file://). Веб-интерфейс не сможет подключиться к аудио-анализатору. Пожалуйста, запустите программу через <strong>Launch_CueGridPro.bat</strong> или ярлык программы!';
+    document.body.prepend(banner);
+  }
+}
 
 function setupEventListeners() {
   // Modal Handlers
@@ -73,7 +88,18 @@ function setupEventListeners() {
   btnCloseModalBtn.addEventListener('click', () => guideModal.classList.add('hidden'));
   guideModal.querySelector('.modal-backdrop').addEventListener('click', () => guideModal.classList.add('hidden'));
 
-  // Drag & Drop Handlers
+  // Global Drag & Drop prevention so dragging outside dropZone doesn't navigate away
+  window.addEventListener('dragover', (e) => {
+    e.preventDefault();
+  });
+  window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    if (e.target !== dropZone && !dropZone.contains(e.target)) {
+      handleFileDrop(e);
+    }
+  });
+
+  // Dedicated Drop Zone Handlers
   ['dragenter', 'dragover'].forEach(eventName => {
     dropZone.addEventListener(eventName, (e) => {
       e.preventDefault();
@@ -103,11 +129,26 @@ function setupEventListeners() {
     openFolderDialog();
   });
 
+  if (btnImportXml) {
+    btnImportXml.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openImportXmlDialog();
+    });
+  }
+
   fileInput.addEventListener('change', (e) => {
     if (e.target.files.length > 0) {
-      uploadAndAnalyzeFiles(Array.from(e.target.files));
+      handleSelectedFilesOrXml(Array.from(e.target.files));
     }
   });
+
+  if (xmlFileInput) {
+    xmlFileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        uploadAndImportXmlFiles(Array.from(e.target.files));
+      }
+    });
+  }
 
   // Export XML
   btnExportXml.addEventListener('click', handleExportXml);
@@ -200,6 +241,16 @@ function setupSettingsHandlers() {
     recalculateAllTracks();
   });
 
+  // Deep Drop-Anchored Grid Mode Checkbox
+  if (chkDropAnchorMode) {
+    chkDropAnchorMode.addEventListener('change', async (e) => {
+      state.dropAnchorMode = e.target.checked;
+      if (state.tracks.length > 0) {
+        await reanalyzeAllLoadedTracks();
+      }
+    });
+  }
+
   // XML Export Checkboxes
   chkExportBeatgrid.addEventListener('change', (e) => {
     state.exportBeatgrid = e.target.checked;
@@ -226,10 +277,16 @@ function setupSettingsHandlers() {
 async function openFilesDialog() {
   try {
     const res = await fetch('/api/pick-files', { method: 'POST' });
-    const data = await res.json();
-    if (data.files && data.files.length > 0) {
-      analyzeLocalPaths(data.files);
-      return;
+    if (res.ok) {
+      const data = await res.json();
+      if (data.canceled) {
+        // User deliberately clicked Cancel in the native file dialog
+        return;
+      }
+      if (data.files && data.files.length > 0) {
+        analyzeLocalPaths(data.files);
+        return;
+      }
     }
   } catch (err) {
     console.log('Native file dialog fallback to HTML input', err);
@@ -240,12 +297,18 @@ async function openFilesDialog() {
 async function openFolderDialog() {
   try {
     const res = await fetch('/api/pick-folder', { method: 'POST' });
-    const data = await res.json();
-    if (data.files && data.files.length > 0) {
-      analyzeLocalPaths(data.files);
-      return;
-    } else if (data.folder && (!data.files || data.files.length === 0)) {
-      alert('В выбранной папке не найдено подходящих аудиофайлов (MP3, WAV, FLAC, AIFF, M4A, OGG).');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.canceled) {
+        return;
+      }
+      if (data.files && data.files.length > 0) {
+        analyzeLocalPaths(data.files);
+        return;
+      } else if (data.folder && (!data.files || data.files.length === 0)) {
+        alert('В выбранной папке не найдено подходящих аудиофайлов (MP3, WAV, FLAC, AIFF, M4A, OGG).');
+        return;
+      }
     }
   } catch (err) {
     console.log('Folder dialog fallback', err);
@@ -253,11 +316,115 @@ async function openFolderDialog() {
   }
 }
 
+async function openImportXmlDialog() {
+  try {
+    const res = await fetch('/api/pick-xml', { method: 'POST' });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.canceled) {
+        return;
+      }
+      if (data.xml_path) {
+        await importLocalXmlPath(data.xml_path);
+        return;
+      }
+    }
+  } catch (err) {
+    console.log('Native XML dialog fallback to HTML input', err);
+  }
+  if (xmlFileInput) {
+    xmlFileInput.click();
+  }
+}
+
+async function importLocalXmlPath(xmlPath) {
+  const fileName = xmlPath.split(/[/\\]/).pop();
+  showProgress(`Импорт готовой сетки из Rekordbox XML (${fileName}) и расстановка точек...`, 35);
+  try {
+    const res = await fetch('/api/import-xml-path', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        xml_path: xmlPath,
+        bar_interval: state.currentInterval,
+        cue_mode: state.cueMode,
+        naming_template: state.namingTemplate,
+        max_hot_cues: state.maxHotCues,
+        max_memory_cues: state.maxMemoryCues,
+        start_bar: 0
+      })
+    });
+    const data = await res.json();
+    if (data.tracks && data.tracks.length > 0) {
+      appendTracks(data.tracks);
+    }
+    if (data.errors && data.errors.length > 0) {
+      alert('Предупреждение при импорте XML:\n• ' + data.errors.join('\n• '));
+    }
+    showProgress('Готово! Сетка импортирована, точки расставлены.', 100);
+    setTimeout(hideProgress, 700);
+  } catch (err) {
+    hideProgress();
+    alert('Ошибка импорта Rekordbox XML: ' + err.message);
+  }
+}
+
+async function uploadAndImportXmlFiles(xmlFiles) {
+  if (!xmlFiles || xmlFiles.length === 0) return;
+
+  for (let i = 0; i < xmlFiles.length; i++) {
+    const file = xmlFiles[i];
+    showProgress(`Импорт готовой сетки из ${file.name} и расстановка Hot/Memory Cues...`, 40);
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('bar_interval', state.currentInterval);
+    formData.append('cue_mode', state.cueMode);
+    formData.append('naming_template', state.namingTemplate);
+    formData.append('max_hot_cues', state.maxHotCues);
+    formData.append('max_memory_cues', state.maxMemoryCues);
+    formData.append('start_bar', 0);
+
+    try {
+      const res = await fetch('/api/import-xml-upload', {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (data.tracks && data.tracks.length > 0) {
+        appendTracks(data.tracks);
+      }
+      if (data.errors && data.errors.length > 0) {
+        alert('Предупреждение при импорте XML:\n• ' + data.errors.join('\n• '));
+      }
+    } catch (err) {
+      alert(`Ошибка импорта ${file.name}: ` + err.message);
+    }
+  }
+  showProgress('Готово!', 100);
+  setTimeout(hideProgress, 700);
+}
+
+async function handleSelectedFilesOrXml(files) {
+  const xmlFiles = files.filter(f => /\.xml$/i.test(f.name));
+  const audioFiles = files.filter(f => /\.(mp3|wav|flac|aiff|aif|m4a|ogg)$/i.test(f.name));
+
+  if (xmlFiles.length > 0) {
+    await uploadAndImportXmlFiles(xmlFiles);
+  }
+  if (audioFiles.length > 0) {
+    await uploadAndAnalyzeFiles(audioFiles);
+  }
+  if (xmlFiles.length === 0 && audioFiles.length === 0) {
+    alert('Пожалуйста, выберите аудиофайлы (MP3, WAV, FLAC, AIFF, M4A, OGG) или файл Rekordbox (.xml).');
+  }
+}
+
 async function handleFileDrop(e) {
   const dt = e.dataTransfer;
   const files = Array.from(dt.files);
   if (files.length > 0) {
-    uploadAndAnalyzeFiles(files);
+    handleSelectedFilesOrXml(files);
   }
 }
 
@@ -268,71 +435,144 @@ async function uploadAndAnalyzeFiles(files) {
     return;
   }
 
-  showProgress('Загрузка и анализ треков...', 10);
+  const total = audioFiles.length;
+  let successCount = 0;
+  const errors = [];
 
-  const formData = new FormData();
-  audioFiles.forEach(file => formData.append('files', file));
-  formData.append('bar_interval', state.currentInterval);
-  formData.append('cue_mode', state.cueMode);
-  formData.append('naming_template', state.namingTemplate);
-  formData.append('max_hot_cues', state.maxHotCues);
-  formData.append('max_memory_cues', state.maxMemoryCues);
-  formData.append('min_bpm', state.minBpm);
-  formData.append('max_bpm', state.maxBpm);
+  for (let i = 0; i < total; i++) {
+    const file = audioFiles[i];
+    const percent = Math.max(5, Math.round((i / total) * 100));
+    showProgress(`Анализ трека (${i + 1} из ${total}): ${file.name}...`, percent);
 
-  try {
-    showProgress('Выполняется глубокий аудио-анализ (BPM, Beatgrid)...', 45);
-    const res = await fetch('/api/analyze-upload', {
-      method: 'POST',
-      body: formData
-    });
-    const data = await res.json();
+    const formData = new FormData();
+    formData.append('files', file);
+    formData.append('bar_interval', state.currentInterval);
+    formData.append('cue_mode', state.cueMode);
+    formData.append('naming_template', state.namingTemplate);
+    formData.append('max_hot_cues', state.maxHotCues);
+    formData.append('max_memory_cues', state.maxMemoryCues);
+    formData.append('min_bpm', state.minBpm);
+    formData.append('max_bpm', state.maxBpm);
+    formData.append('start_bar', 0);
+    formData.append('drop_anchor_mode', state.dropAnchorMode ? 'true' : 'false');
 
-    if (data.tracks && data.tracks.length > 0) {
-      appendTracks(data.tracks);
+    try {
+      const res = await fetch('/api/analyze-upload', {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!res.ok) {
+        let errMsg = `Ошибка сервера (HTTP ${res.status})`;
+        try {
+          const errData = await res.json();
+          if (errData.detail) errMsg = errData.detail;
+        } catch (_) {}
+        errors.push(`${file.name}: ${errMsg}`);
+        continue;
+      }
+
+      const data = await res.json();
+      if (data.tracks && data.tracks.length > 0) {
+        appendTracks(data.tracks);
+        successCount++;
+      }
+      if (data.errors && data.errors.length > 0) {
+        errors.push(...data.errors);
+      }
+    } catch (err) {
+      console.error('Ошибка анализа трека:', file.name, err);
+      if (err.message && (err.message.includes('fetch') || err.message.includes('NetworkError') || err.message.includes('Failed'))) {
+        hideProgress();
+        alert('Ошибка подключения к серверу CueGrid Pro (Failed to fetch).\n\nСервер программы не отвечает. Убедитесь, что приложение CueGrid Pro запущено через Launch_CueGridPro.bat или ярлык программы на рабочем столе.');
+        return;
+      }
+      errors.push(`${file.name}: ${err.message}`);
     }
-    if (data.errors && data.errors.length > 0) {
-      console.warn('Analysis warnings/errors:', data.errors);
+  }
+
+  showProgress('Готово!', 100);
+  setTimeout(hideProgress, 700);
+
+  if (errors.length > 0) {
+    if (successCount === 0) {
+      alert('Не удалось проанализировать выбранные файлы:\n• ' + errors.join('\n• '));
+    } else {
+      console.warn('Некоторые треки не были проанализированы:', errors);
     }
-    showProgress('Готово!', 100);
-    setTimeout(hideProgress, 600);
-  } catch (err) {
-    hideProgress();
-    alert('Ошибка при анализе файлов: ' + err.message);
   }
 }
 
 async function analyzeLocalPaths(filePaths) {
-  showProgress('Анализ локальных треков...', 20);
+  if (!filePaths || filePaths.length === 0) return;
 
-  try {
-    const res = await fetch('/api/analyze-path', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        file_paths: filePaths,
-        bar_interval: state.currentInterval,
-        cue_mode: state.cueMode,
-        naming_template: state.namingTemplate,
-        max_hot_cues: state.maxHotCues,
-        max_memory_cues: state.maxMemoryCues,
-        min_bpm: state.minBpm,
-        max_bpm: state.maxBpm
-      })
-    });
-    const data = await res.json();
+  const total = filePaths.length;
+  let successCount = 0;
+  const errors = [];
+  const chunkSize = 2; // Process in small chunks for fast live rendering and smooth progress
 
-    if (data.tracks && data.tracks.length > 0) {
-      appendTracks(data.tracks);
+  for (let i = 0; i < total; i += chunkSize) {
+    const chunk = filePaths.slice(i, i + chunkSize);
+    const percent = Math.max(5, Math.round((i / total) * 100));
+    const currentName = chunk[0].split(/[/\\]/).pop();
+    showProgress(`Анализ локальных треков (${i + 1} из ${total}): ${currentName}...`, percent);
+
+    try {
+      const res = await fetch('/api/analyze-path', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_paths: chunk,
+          bar_interval: state.currentInterval,
+          cue_mode: state.cueMode,
+          naming_template: state.namingTemplate,
+          max_hot_cues: state.maxHotCues,
+          max_memory_cues: state.maxMemoryCues,
+          min_bpm: state.minBpm,
+          max_bpm: state.maxBpm,
+          start_bar: 0,
+          drop_anchor_mode: state.dropAnchorMode
+        })
+      });
+
+      if (!res.ok) {
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const errData = await res.json();
+          if (errData.detail) errMsg = errData.detail;
+        } catch (_) {}
+        errors.push(`${currentName}: ${errMsg}`);
+        continue;
+      }
+
+      const data = await res.json();
+      if (data.tracks && data.tracks.length > 0) {
+        appendTracks(data.tracks);
+        successCount += data.tracks.length;
+      }
+      if (data.errors && data.errors.length > 0) {
+        errors.push(...data.errors);
+      }
+    } catch (err) {
+      console.error('Ошибка анализа локальных путей:', err);
+      if (err.message && (err.message.includes('fetch') || err.message.includes('NetworkError') || err.message.includes('Failed'))) {
+        hideProgress();
+        alert('Ошибка подключения к серверу CueGrid Pro (Failed to fetch).\n\nСервер программы не отвечает. Убедитесь, что приложение CueGrid Pro запущено через Launch_CueGridPro.bat.');
+        return;
+      }
+      errors.push(`Ошибка: ${err.message}`);
     }
-    if (data.errors && data.errors.length > 0) {
-      console.warn('Analysis warnings/errors:', data.errors);
+  }
+
+  showProgress('Готово!', 100);
+  setTimeout(hideProgress, 700);
+
+  if (errors.length > 0) {
+    if (successCount === 0) {
+      alert('Ошибка анализа:\n• ' + errors.join('\n• '));
+    } else {
+      console.warn('Предупреждения анализа:', errors);
     }
-    showProgress('Готово!', 100);
-    setTimeout(hideProgress, 600);
-  } catch (err) {
-    hideProgress();
-    alert('Ошибка анализа: ' + err.message);
   }
 }
 
@@ -367,8 +607,8 @@ function hideProgress() {
 
 async function recalculateAllTracks() {
   for (const track of state.tracks) {
-    // If BPM is outside target range, adjust it
-    if (state.minBpm > 0 && state.maxBpm >= state.minBpm) {
+    // Only auto-adjust BPM octave if it was NOT imported from a locked Rekordbox XML grid
+    if (!track.from_rekordbox_xml && state.minBpm > 0 && state.maxBpm >= state.minBpm) {
       while (track.bpm < state.minBpm && (track.bpm * 2 <= state.maxBpm * 1.05 || track.bpm * 2 <= state.minBpm + (state.maxBpm - state.minBpm) * 0.5)) {
         track.bpm = Math.round(track.bpm * 2 * 100) / 100;
       }
@@ -378,6 +618,59 @@ async function recalculateAllTracks() {
     }
     await recalculateTrackCues(track);
   }
+  renderTracksList();
+}
+
+async function reanalyzeAllLoadedTracks() {
+  if (state.tracks.length === 0) return;
+  const total = state.tracks.length;
+  const modeLabel = state.dropAnchorMode ? 'Глубокий анализ от Первого Дропа' : 'Стандартный быстрый анализ';
+
+  for (let i = 0; i < total; i++) {
+    const track = state.tracks[i];
+    if (track.from_rekordbox_xml) {
+      // Track already has a pre-analyzed Rekordbox grid — only recalculate cues!
+      await recalculateTrackCues(track);
+      continue;
+    }
+    const percent = Math.max(5, Math.round((i / total) * 100));
+    showProgress(`${modeLabel} (${i + 1} из ${total}): ${track.title || track.file_name}...`, percent);
+
+    try {
+      const res = await fetch('/api/reanalyze-track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_path: track.file_path,
+          bar_interval: state.currentInterval,
+          cue_mode: state.cueMode,
+          naming_template: state.namingTemplate,
+          max_hot_cues: state.maxHotCues,
+          max_memory_cues: state.maxMemoryCues,
+          min_bpm: state.minBpm,
+          max_bpm: state.maxBpm,
+          start_bar: 0,
+          drop_anchor_mode: state.dropAnchorMode
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.track) {
+          const updated = data.track;
+          track.bpm = updated.bpm;
+          track.first_beat_offset = updated.first_beat_offset;
+          track.drop_time = updated.drop_time;
+          track.drop_anchor_mode = updated.drop_anchor_mode;
+          track.cue_points = updated.cue_points;
+        }
+      }
+    } catch (err) {
+      console.error('Ошибка переанализа трека:', err);
+    }
+  }
+
+  showProgress('Готово!', 100);
+  setTimeout(hideProgress, 600);
   renderTracksList();
 }
 
@@ -394,7 +687,8 @@ async function recalculateTrackCues(track) {
         cue_mode: state.cueMode,
         naming_template: state.namingTemplate,
         max_hot_cues: state.maxHotCues,
-        max_memory_cues: state.maxMemoryCues
+        max_memory_cues: state.maxMemoryCues,
+        start_bar: 0
       })
     });
     const data = await res.json();
@@ -445,6 +739,14 @@ function createTrackCard(track) {
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
+  const dropBadgeHtml = (track.drop_anchor_mode && track.drop_time !== null && track.drop_time !== undefined)
+    ? `<span class="badge-drop" onclick="seekTrackPosition('${track.id}', ${track.drop_time})" title="Нажмите, чтобы перейти к обнаруженному Первому Дропу (${formatMinSec(track.drop_time)})">🔥 Дроп: ${formatMinSec(track.drop_time)} (${track.drop_time.toFixed(2)}с)</span>`
+    : '';
+
+  const rbGridBadgeHtml = track.from_rekordbox_xml
+    ? `<span class="badge-rb-grid" title="Сетка (Beatgrid) и BPM загружены из готового Rekordbox XML — расставлены только Hot и Memory Cues">✓ Сетка Rekordbox XML</span>`
+    : '';
+
   card.innerHTML = `
     <div class="track-top-bar">
       <div class="track-info">
@@ -455,6 +757,8 @@ function createTrackCard(track) {
           <span>${track.bitrate} kbps</span>
           <span>${track.samplerate} Hz</span>
           <span>⏱ ${formatMinSec(track.duration)}</span>
+          ${rbGridBadgeHtml}
+          ${dropBadgeHtml}
         </div>
       </div>
       <button class="track-btn-remove" title="Удалить трек" onclick="removeTrack('${track.id}')">
@@ -501,14 +805,17 @@ function createTrackCard(track) {
       </div>
 
       <div class="fine-tune-field">
-        <label class="fine-tune-label">Смещение 1-го удара (мс)</label>
+        <label class="fine-tune-label">Смещение 1-го такта / доли</label>
         <div class="input-group">
-          <input type="number" step="1" class="input-num" value="${Math.round(track.first_beat_offset * 1000)}" 
-                 onchange="updateTrackOffset('${track.id}', this.value / 1000)">
-          <button class="btn-nudge" onclick="nudgeOffset('${track.id}', -0.010)">-10ms</button>
-          <button class="btn-nudge" onclick="nudgeOffset('${track.id}', +0.010)">+10ms</button>
-          <button class="btn-nudge" onclick="nudgeOffset('${track.id}', -0.050)">-50ms</button>
-          <button class="btn-nudge" onclick="nudgeOffset('${track.id}', +0.050)">+50ms</button>
+          <input type="number" step="1" class="input-num" style="width: 68px;" value="${Math.round(track.first_beat_offset * 1000)}" 
+                 onchange="updateTrackOffset('${track.id}', this.value / 1000)" title="Смещение 1-й доли в миллисекундах">
+          <button class="btn-nudge" title="Сдвинуть сетку на 1 четверть (долю) назад" onclick="nudgeBeats('${track.id}', -1)">◀ -1 уд.</button>
+          <button class="btn-nudge" title="Сдвинуть сетку на 1 четверть (долю) вперед" onclick="nudgeBeats('${track.id}', +1)">+1 уд. ▶</button>
+          <button class="btn-nudge" title="Сдвинуть сетку на 0.5 доли назад" onclick="nudgeBeats('${track.id}', -0.5)">-½</button>
+          <button class="btn-nudge" title="Сдвинуть сетку на 0.5 доли вперед" onclick="nudgeBeats('${track.id}', +0.5)">+½</button>
+          <button class="btn-nudge" title="Сбросить смещение на 0.0с (начало трека)" onclick="updateTrackOffset('${track.id}', 0)">0.0с</button>
+          <button class="btn-nudge" title="Тонкая подстройка -10 мс" onclick="nudgeOffset('${track.id}', -0.010)">-10ms</button>
+          <button class="btn-nudge" title="Тонкая подстройка +10 мс" onclick="nudgeOffset('${track.id}', +0.010)">+10ms</button>
         </div>
       </div>
     </div>
@@ -644,6 +951,31 @@ function drawWaveform(track) {
     ctx.fillStyle = '#000000';
     ctx.fillText(tagText, x - textWidth / 2, 12);
   });
+
+  // 3. Draw First Drop Anchor Indicator (if Deep Drop-Anchored Mode was used)
+  if (track.drop_anchor_mode && track.drop_time !== null && track.drop_time !== undefined && track.duration > 0) {
+    const dropRatio = track.drop_time / track.duration;
+    if (dropRatio >= 0 && dropRatio <= 1) {
+      const dx = dropRatio * width;
+      ctx.strokeStyle = '#ff3366';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(dx, 0);
+      ctx.lineTo(dx, height);
+      ctx.stroke();
+
+      const dropLabel = 'DROP';
+      ctx.font = 'bold 8px "JetBrains Mono", monospace';
+      const dw = ctx.measureText(dropLabel).width;
+      ctx.fillStyle = '#ff3366';
+      ctx.beginPath();
+      ctx.roundRect(dx - (dw + 6) / 2, height - 15, dw + 6, 13, 3);
+      ctx.fill();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(dropLabel, dx - dw / 2, height - 6);
+    }
+  }
 }
 
 
@@ -805,6 +1137,16 @@ async function nudgeOffset(trackId, deltaSec) {
   renderTracksList();
 }
 
+async function nudgeBeats(trackId, deltaBeats) {
+  const track = state.tracks.find(t => t.id === trackId);
+  if (!track || !track.bpm) return;
+  const beatSec = 60.0 / track.bpm;
+  const deltaSec = deltaBeats * beatSec;
+  track.first_beat_offset = Math.max(0, Math.round((track.first_beat_offset + deltaSec) * 1000) / 1000);
+  await recalculateTrackCues(track);
+  renderTracksList();
+}
+
 function removeTrack(trackId) {
   if (state.activeTrackId === trackId) {
     stopActiveAudio();
@@ -871,13 +1213,4 @@ function escapeHtml(text) {
   div.textContent = text;
   return div.innerHTML;
 }
-
-// Clean shutdown when window is closed
-window.addEventListener('beforeunload', () => {
-  try {
-    if (navigator.sendBeacon) {
-      navigator.sendBeacon('/api/shutdown');
-    }
-  } catch (e) {}
-});
 

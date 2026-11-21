@@ -463,6 +463,65 @@ body {
   color: var(--text-muted);
 }
 
+.drop-anchor-card {
+  background: linear-gradient(135deg, rgba(255, 145, 0, 0.08), rgba(255, 51, 102, 0.06));
+  border-color: rgba(255, 145, 0, 0.35);
+}
+
+.drop-anchor-card:hover {
+  background: linear-gradient(135deg, rgba(255, 145, 0, 0.14), rgba(255, 51, 102, 0.10));
+  border-color: var(--accent-orange);
+}
+
+.drop-anchor-card input[type="checkbox"]:checked + .checkbox-indicator {
+  background: var(--accent-orange);
+  border-color: var(--accent-orange);
+  box-shadow: 0 0 12px rgba(255, 145, 0, 0.5);
+}
+
+.badge-pro {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, #ff9100, #ff3366);
+  color: #fff;
+  margin-left: 6px;
+  letter-spacing: 0.5px;
+  vertical-align: middle;
+}
+
+.badge-drop {
+  background: rgba(255, 145, 0, 0.15);
+  border: 1px solid rgba(255, 145, 0, 0.45);
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--accent-orange);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.badge-drop:hover {
+  background: rgba(255, 145, 0, 0.28);
+  color: #fff;
+}
+
+.badge-rb-grid {
+  background: rgba(0, 230, 118, 0.14);
+  border: 1px solid rgba(0, 230, 118, 0.45);
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--accent-green);
+  font-weight: 700;
+}
+
 /* Drop Zone */
 .drop-zone {
   background: var(--bg-card);
@@ -759,6 +818,7 @@ body {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-wrap: wrap;
 }
 
 .input-num {

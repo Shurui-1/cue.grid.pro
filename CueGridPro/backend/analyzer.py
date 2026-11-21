@@ -107,6 +107,49 @@ def generate_waveform_peaks(y: np.ndarray, num_peaks: int = 800) -> List[float]:
     return normalized_peaks
 
 
+def generate_synthetic_peaks_for_grid(duration: float, bpm: float, first_beat_offset: float, num_peaks: int = 800) -> List[float]:
+    """
+    Generates a clean rhythmic visual envelope when only Rekordbox XML metadata is loaded
+    and the raw audio file is not scanned or not on the current drive.
+    """
+    if duration <= 0 or bpm <= 0:
+        return [0.35] * num_peaks
+    beat_sec = 60.0 / bpm
+    bar_sec = 4.0 * beat_sec
+    peaks = []
+    for i in range(num_peaks):
+        t = (i / num_peaks) * duration
+        if t < first_beat_offset:
+            peaks.append(0.2)
+            continue
+        rel_t = t - first_beat_offset
+        beat_phase = (rel_t % beat_sec) / beat_sec
+        bar_phase = (rel_t % bar_sec) / bar_sec
+        pulse = math.exp(-6.0 * beat_phase) * 0.55 + (0.25 if bar_phase < 0.25 else 0.1)
+        peaks.append(round(min(1.0, max(0.15, pulse)), 3))
+    return peaks
+
+
+def fast_extract_peaks_and_duration(file_path: str, fallback_duration: float, bpm: float, first_beat_offset: float, num_peaks: int = 800) -> Dict[str, Any]:
+    """
+    Fast extraction of waveform peaks (without running heavy BPM / Beatgrid DSP)
+    for tracks whose Beatgrid & BPM are already imported from Rekordbox XML.
+    """
+    if file_path and os.path.exists(file_path):
+        try:
+            y, sr = librosa.load(file_path, sr=8000, mono=True)
+            dur = len(y) / sr if sr > 0 else fallback_duration
+            peaks = generate_waveform_peaks(y, num_peaks=num_peaks)
+            return {"duration": round(float(dur), 2), "peaks": peaks, "audio_available": True}
+        except Exception:
+            pass
+    return {
+        "duration": round(float(fallback_duration), 2),
+        "peaks": generate_synthetic_peaks_for_grid(fallback_duration, bpm, first_beat_offset, num_peaks=num_peaks),
+        "audio_available": False
+    }
+
+
 import scipy.signal
 
 
@@ -291,42 +334,404 @@ def estimate_accurate_bpm(
     return float(round(best_bpm))
 
 
-def analyze_audio_track(
-    file_path: str,
-    max_duration: int = 240,
+def detect_accurate_first_beat(y: np.ndarray, sr: int, bpm: float) -> float:
+    """
+    Finds the exact timestamp of Bar 1, Beat 1 (Downbeat / First Bar Origin).
+    
+    1. Detects earliest audible audio in the first 1.5s (MP3 encoder delay / track start).
+       If audio starts immediately (< 0.03s), snaps to 0.000s matching Rekordbox 1.1 grid marker.
+    2. Uses Butterworth bandpass filters for Sub-bass Kick (35-140 Hz) and Snare (300-3000 Hz).
+    3. Searches for the 4-beat bar phase offset phi in [0, bar_sec) that maximizes kick energy
+       on Beat 1 & 3 and snare energy on Beat 2 & 4, while heavily penalizing snare energy on Beat 1.
+       This prevents locking onto Beat 2 (snare = +1 beat offset) or offbeat hi-hats (+1.5 beats).
+    4. Projects the downbeat phase back to the beginning of the track [0.0, bar_sec).
+    """
+    if bpm <= 0 or len(y) == 0:
+        return 0.0
+
+    beat_sec = 60.0 / bpm
+    bar_sec = 4.0 * beat_sec
+    hop_length = 512
+
+    # Check earliest audible sound in first 1.5 seconds
+    init_samples = int(min(1.5 * sr, len(y)))
+    y_init = y[:init_samples]
+    peak_val = float(np.max(np.abs(y_init))) if len(y_init) > 0 else 0.0
+    thresh = 0.02 * peak_val if peak_val > 0 else 0.001
+    audible_indices = np.where(np.abs(y_init) > thresh)[0]
+    first_audible_time = float(audible_indices[0]) / sr if len(audible_indices) > 0 else 0.0
+
+    # If the track starts immediately with audio (standard for DJ tracks, MP3 delay < 0.03s), snap to 0.000s
+    if first_audible_time < 0.03:
+        return 0.0
+
+    # If the track has an intro or delayed start, find true kick/snare downbeat phase
+    nyq = sr / 2.0
+    test_len = int(min(45.0 * sr, len(y)))
+    y_chunk = y[:test_len]
+
+    try:
+        # Sub-bass kick filter: 35 - 140 Hz
+        b_kick, a_kick = scipy.signal.butter(2, [35.0 / nyq, 140.0 / nyq], btype='bandpass')
+        y_kick = scipy.signal.filtfilt(b_kick, a_kick, y_chunk)
+        kick_env = librosa.onset.onset_strength(y=y_kick, sr=sr, hop_length=hop_length)
+
+        # Snare / Clap filter: 300 - 3000 Hz
+        b_snare, a_snare = scipy.signal.butter(2, [300.0 / nyq, 3000.0 / nyq], btype='bandpass')
+        y_snare = scipy.signal.filtfilt(b_snare, a_snare, y_chunk)
+        snare_env = librosa.onset.onset_strength(y=y_snare, sr=sr, hop_length=hop_length)
+
+        env_times = librosa.frames_to_time(np.arange(len(kick_env)), sr=sr, hop_length=hop_length)
+
+        # Grid search candidates in [0, bar_sec) with 5ms resolution
+        candidates = np.arange(0.0, bar_sec, 0.005)
+        best_score = -1e9
+        best_phase = 0.0
+        num_bars = int(min(30.0, len(y_chunk) / sr) // bar_sec)
+
+        for t0 in candidates:
+            score = 0.0
+            for k in range(num_bars):
+                bar_start = t0 + k * bar_sec
+                b1 = bar_start
+                b2 = bar_start + beat_sec
+                b3 = bar_start + 2.0 * beat_sec
+                b4 = bar_start + 3.0 * beat_sec
+
+                k1 = np.interp(b1, env_times, kick_env)
+                k3 = np.interp(b3, env_times, kick_env)
+                s1 = np.interp(b1, env_times, snare_env)
+                s2 = np.interp(b2, env_times, snare_env)
+                s4 = np.interp(b4, env_times, snare_env)
+
+                # Reward kick on Beat 1 & 3, snare on Beat 2 & 4. Penalize snare on Beat 1!
+                score += (2.0 * k1 + 1.0 * k3 + 1.5 * s2 + 1.5 * s4 - 2.0 * s1)
+
+            if score > best_score:
+                best_score = score
+                best_phase = t0
+
+        origin = best_phase % bar_sec
+        while origin >= bar_sec:
+            origin -= bar_sec
+        while origin < 0:
+            origin += bar_sec
+
+        # If origin is within 40ms of the earliest audible onset, snap to it
+        if abs(origin - first_audible_time) < 0.04:
+            origin = first_audible_time
+        if origin < 0.03:
+            origin = 0.0
+
+        return round(float(origin), 3)
+    except Exception:
+        # Fallback to earliest audible time or onset
+        onsets = librosa.onset.onset_detect(y=y_init, sr=sr, units='time')
+        if len(onsets) > 0 and onsets[0] < 0.1:
+            return round(float(onsets[0]), 3)
+        return round(first_audible_time, 3)
+
+
+def analyze_drop_anchored_grid(
+    y: np.ndarray,
+    sr: int,
+    initial_bpm: float,
     min_bpm: float = 60.0,
     max_bpm: float = 180.0
+) -> Dict[str, float]:
+    """
+    Deep Drop-Anchored Beatgrid & BPM Analyzer:
+    1. Filters the track into Sub-Bass / Kick band (30 - 150 Hz) and Mid-High Percussion (250 - 4000 Hz).
+    2. Detects the First Drop by analyzing the macro-structural jump in sub-bass RMS energy
+       and percussive density (comparing a 4-bar post-window against a 4-bar pre-window).
+    3. Refines the BPM specifically inside the high-energy post-drop section (16-32 bars after the drop)
+       with 0.01 BPM precision, where drums are crystal clear and rock-solid.
+    4. Finds the exact downbeat timestamp of the First Drop (`drop_time`) and locks the 4/4 bar phase
+       to the drop impact transient + 16-bar post-drop kick/snare pattern.
+    5. Back-propagates the beatgrid from `drop_time` back to the start of the track:
+       `first_beat_offset = drop_time - N * bar_sec`, ensuring the grid and phrase cues (every 8/16/32 bars)
+       hit the First Drop with 100% precision even if the track has an ambient/drumless or off-beat intro.
+    """
+    duration = len(y) / sr if sr > 0 else 0.0
+    if duration < 8.0 or initial_bpm <= 0:
+        fb = detect_accurate_first_beat(y, sr, initial_bpm)
+        return {"bpm": initial_bpm, "first_beat_offset": fb, "drop_time": fb}
+
+    nyq = sr / 2.0
+    hop_length = 256  # Higher time resolution (~11.6ms at 22050Hz) for precise drop transient locking
+
+    # 1. Bandpass filters for Sub-Bass (30-150 Hz) and Snare/Percussion (300-3500 Hz)
+    try:
+        b_sub, a_sub = scipy.signal.butter(2, [30.0 / nyq, 150.0 / nyq], btype='bandpass')
+        y_sub = scipy.signal.filtfilt(b_sub, a_sub, y)
+
+        b_mid, a_mid = scipy.signal.butter(2, [300.0 / nyq, 3500.0 / nyq], btype='bandpass')
+        y_mid = scipy.signal.filtfilt(b_mid, a_mid, y)
+    except Exception:
+        y_sub = y
+        y_mid = y
+
+    # Compute RMS energy envelopes and onset envelopes
+    rms_sub = librosa.feature.rms(y=y_sub, frame_length=1024, hop_length=hop_length)[0]
+    rms_full = librosa.feature.rms(y=y, frame_length=1024, hop_length=hop_length)[0]
+    kick_env = librosa.onset.onset_strength(y=y_sub, sr=sr, hop_length=hop_length)
+    snare_env = librosa.onset.onset_strength(y=y_mid, sr=sr, hop_length=hop_length)
+    env_times = librosa.frames_to_time(np.arange(len(kick_env)), sr=sr, hop_length=hop_length)
+
+    # Normalize envelopes
+    rms_sub_norm = rms_sub / (np.percentile(rms_sub, 98) + 1e-6)
+    rms_full_norm = rms_full / (np.percentile(rms_full, 98) + 1e-6)
+    kick_env_norm = kick_env / (np.percentile(kick_env, 98) + 1e-6)
+    snare_env_norm = snare_env / (np.percentile(snare_env, 98) + 1e-6)
+
+    beat_sec_init = 60.0 / initial_bpm
+    bar_sec_init = 4.0 * beat_sec_init
+    frames_per_bar = max(4, int(round(bar_sec_init * sr / hop_length)))
+
+    # 2. Macro-structural First Drop Detection
+    # Search window: typically between 4 bars (or 10% of track) up to 65% of track duration
+    min_drop_sec = min(max(bar_sec_init * 2.0, 6.0), duration * 0.25)
+    max_drop_sec = max(min_drop_sec + bar_sec_init * 4.0, min(duration * 0.70, 150.0))
+
+    min_frame = int(min_drop_sec * sr / hop_length)
+    max_frame = min(len(rms_sub_norm) - frames_per_bar * 2, int(max_drop_sec * sr / hop_length))
+
+    win_pre = frames_per_bar * 4   # 4 bars before drop (build-up / riser / silence)
+    win_post = frames_per_bar * 8  # 8 bars after drop (full bass & drums)
+
+    drop_frame = 0
+    best_drop_novelty = -1.0
+
+    # Global high-bass threshold: a real drop has sustained sub-bass energy near the track's top levels
+    high_sub_thresh = 0.52 * np.percentile(rms_sub_norm, 95)
+
+    if max_frame > min_frame + 4:
+        novelty_curve = np.zeros(len(rms_sub_norm), dtype=np.float32)
+        for f in range(min_frame, max_frame):
+            p_start = max(0, f - win_pre)
+            n_end = min(len(rms_sub_norm), f + win_post)
+
+            pre_sub = float(np.mean(rms_sub_norm[p_start:f])) if f > p_start else 0.0
+            post_sub = float(np.mean(rms_sub_norm[f:n_end])) if n_end > f else 0.0
+            post_full = float(np.mean(rms_full_norm[f:n_end])) if n_end > f else 0.0
+            post_kick = float(np.mean(kick_env_norm[f:n_end])) if n_end > f else 0.0
+
+            # Contrast jump from pre-drop to post-drop + sustained heavy bass energy
+            sub_jump = max(0.0, post_sub - 0.75 * pre_sub)
+            novelty_curve[f] = (sub_jump * 1.6 + post_sub * 0.8 + post_full * 0.4 + post_kick * 0.5)
+
+        # Find major peaks in drop novelty curve separated by at least 4 bars
+        peaks, _ = scipy.signal.find_peaks(
+            novelty_curve[min_frame:max_frame],
+            distance=frames_per_bar * 4,
+            prominence=0.12 * np.max(novelty_curve[min_frame:max_frame] + 1e-6)
+        )
+
+        # Pick the FIRST prominent peak that reaches sustained drop bass energy (First Drop!)
+        max_nov = float(np.max(novelty_curve[min_frame:max_frame])) if max_frame > min_frame else 0.0
+        selected_peak = None
+        for p in peaks:
+            f_idx = min_frame + p
+            n_end = min(len(rms_sub_norm), f_idx + win_post)
+            post_sub = float(np.mean(rms_sub_norm[f_idx:n_end]))
+            if post_sub >= high_sub_thresh and novelty_curve[f_idx] >= 0.62 * max_nov:
+                selected_peak = f_idx
+                break
+
+        if selected_peak is not None:
+            drop_frame = selected_peak
+        else:
+            drop_frame = int(min_frame + np.argmax(novelty_curve[min_frame:max_frame]))
+
+    coarse_drop_time = float(env_times[drop_frame]) if drop_frame < len(env_times) else 0.0
+
+    # If the track starts right away with full bass from 0.0s and has no stronger drop contrast later
+    init_bars_end = min(len(rms_sub_norm), frames_per_bar * 4)
+    init_sub_energy = float(np.mean(rms_sub_norm[:init_bars_end])) if init_bars_end > 0 else 0.0
+    drop_sub_energy = float(np.mean(rms_sub_norm[drop_frame:min(len(rms_sub_norm), drop_frame + win_post)]))
+    if init_sub_energy > 0.85 * drop_sub_energy and coarse_drop_time < bar_sec_init * 4:
+        coarse_drop_time = 0.0
+
+    # 3. High-Precision BPM Refinement inside the Drop section
+    # Extract 32 bars starting from coarse_drop_time (where the groove is strongest)
+    drop_sample_start = int(max(0.0, coarse_drop_time) * sr)
+    drop_sample_end = int(min(len(y), drop_sample_start + int(max(45.0, bar_sec_init * 32) * sr)))
+    if drop_sample_end - drop_sample_start < int(12.0 * sr):
+        drop_sample_start = 0
+        drop_sample_end = len(y)
+
+    y_drop_section = y[drop_sample_start:drop_sample_end]
+    kick_drop_env = kick_env_norm[drop_frame:min(len(kick_env_norm), int(drop_sample_end / hop_length))]
+    snare_drop_env = snare_env_norm[drop_frame:min(len(snare_env_norm), int(drop_sample_end / hop_length))]
+    comb_drop_env = 0.65 * kick_drop_env + 0.35 * snare_drop_env
+
+    refined_bpm = float(initial_bpm)
+    if len(comb_drop_env) > frames_per_bar * 4:
+        frame_rate = sr / hop_length
+        # Search around initial_bpm (±1.5 BPM with 0.02 BPM precision, plus exact integer BPMs)
+        bpm_candidates = np.unique(np.concatenate([
+            np.linspace(initial_bpm - 1.5, initial_bpm + 1.5, 151),
+            np.array([round(initial_bpm - 1), round(initial_bpm), round(initial_bpm + 1)], dtype=float)
+        ]))
+        bpm_candidates = bpm_candidates[(bpm_candidates >= min_bpm) & (bpm_candidates <= max_bpm)]
+
+        ac_drop = np.correlate(comb_drop_env - np.mean(comb_drop_env), comb_drop_env - np.mean(comb_drop_env), mode='full')
+        ac_drop = ac_drop[len(comb_drop_env) - 1:]
+        ac_drop = ac_drop / (ac_drop[0] + 1e-6)
+
+        best_bpm_score = -1e9
+        for cand_bpm in bpm_candidates:
+            beat_lag = frame_rate * 60.0 / cand_bpm
+            comb_sum = 0.0
+            # Evaluate correlation at 1, 2, 4, 8, 16 beats (up to 4 bars)
+            for mult, weight in [(1, 1.0), (2, 0.8), (4, 1.2), (8, 1.0), (16, 0.9)]:
+                idx_float = beat_lag * mult
+                if idx_float < len(ac_drop) - 1:
+                    i0 = int(idx_float)
+                    frac = idx_float - i0
+                    val = (1.0 - frac) * ac_drop[i0] + frac * ac_drop[i0 + 1]
+                    comb_sum += weight * val
+
+            # Slight preference for clean integer or 0.5 BPMs (99% of modern DJ tracks)
+            is_clean_int = abs(cand_bpm - round(cand_bpm)) < 0.015
+            int_bonus = 1.04 if is_clean_int else 1.0
+
+            score = comb_sum * int_bonus
+            if score > best_bpm_score:
+                best_bpm_score = score
+                refined_bpm = float(round(cand_bpm, 2))
+
+        # Snap to integer if within 0.08 BPM
+        if abs(refined_bpm - round(refined_bpm)) <= 0.08:
+            refined_bpm = float(round(refined_bpm))
+
+    beat_sec = 60.0 / refined_bpm
+    bar_sec = 4.0 * beat_sec
+
+    # 4. Lock Exact Downbeat of the First Drop (`drop_time`)
+    # Search in window [coarse_drop_time - 1.5*bar_sec, coarse_drop_time + 1.5*bar_sec]
+    search_start = max(0.0, coarse_drop_time - 1.25 * bar_sec)
+    search_end = min(duration - bar_sec, coarse_drop_time + 1.25 * bar_sec)
+
+    if search_end <= search_start:
+        search_start = 0.0
+        search_end = min(duration, bar_sec * 2.0)
+
+    # First, find the bar phase [0, bar_sec) inside the post-drop section that best aligns with
+    # Kick on Beat 1 & 3 and Snare on Beat 2 & 4 over 16 bars after the drop
+    phase_candidates = np.arange(0.0, bar_sec, 0.004)  # 4ms resolution
+    best_phase_score = -1e9
+    best_bar_phase = 0.0
+    num_eval_bars = int(min(16, max(4, (duration - coarse_drop_time) // bar_sec)))
+
+    for phi in phase_candidates:
+        # Anchor candidate bar start near coarse_drop_time
+        base_bar_t = coarse_drop_time - (coarse_drop_time % bar_sec) + phi
+        if base_bar_t < coarse_drop_time - 0.5 * bar_sec:
+            base_bar_t += bar_sec
+
+        score = 0.0
+        for k in range(num_eval_bars):
+            b_start = base_bar_t + k * bar_sec
+            b1 = b_start
+            b2 = b_start + beat_sec
+            b3 = b_start + 2.0 * beat_sec
+            b4 = b_start + 3.0 * beat_sec
+
+            k1 = np.interp(b1, env_times, kick_env_norm)
+            k3 = np.interp(b3, env_times, kick_env_norm)
+            s1 = np.interp(b1, env_times, snare_env_norm)
+            s2 = np.interp(b2, env_times, snare_env_norm)
+            s4 = np.interp(b4, env_times, snare_env_norm)
+
+            # Weight the first 4 bars of the drop extra heavily
+            bar_w = 1.5 if k < 4 else 1.0
+            score += bar_w * (2.4 * k1 + 1.0 * k3 + 1.6 * s2 + 1.6 * s4 - 2.2 * s1)
+
+        if score > best_phase_score:
+            best_phase_score = score
+            best_bar_phase = phi
+
+    # Snap exact drop timestamp to the bar downbeat closest to the drop impact transient
+    best_drop_time = best_bar_phase
+    min_k = int(math.floor((search_start - best_bar_phase) / bar_sec))
+    max_k = int(math.ceil((search_end - best_bar_phase) / bar_sec))
+
+    best_transient_score = -1e9
+    for k in range(min_k, max_k + 1):
+        cand_drop_t = best_bar_phase + k * bar_sec
+        if cand_drop_t < 0.0 or cand_drop_t >= duration - beat_sec:
+            continue
+
+        # Check kick transient right on cand_drop_t and sustained sub-bass immediately after vs before
+        k_hit = float(np.interp(cand_drop_t, env_times, kick_env_norm))
+        f_idx = int(round(cand_drop_t * sr / hop_length))
+        pre_f = max(0, f_idx - frames_per_bar * 2)
+        post_f = min(len(rms_sub_norm), f_idx + frames_per_bar * 4)
+
+        sub_before = float(np.mean(rms_sub_norm[pre_f:f_idx])) if f_idx > pre_f else 0.0
+        sub_after = float(np.mean(rms_sub_norm[f_idx:post_f])) if post_f > f_idx else 0.0
+        prox_weight = np.exp(-0.5 * ((cand_drop_t - coarse_drop_time) / (bar_sec * 1.5)) ** 2)
+
+        t_score = (k_hit * 1.5 + max(0.0, sub_after - 0.7 * sub_before) * 2.5 + sub_after) * prox_weight
+        if t_score > best_transient_score:
+            best_transient_score = t_score
+            best_drop_time = cand_drop_t
+
+    # 5. Back-propagate the Beatgrid from `best_drop_time` to the beginning of the track
+    # Prefer phrasing multiples (16, 8, or 4 bars before the drop) if they align near the track's start
+    first_beat_offset = best_drop_time % bar_sec
+    while first_beat_offset >= bar_sec:
+        first_beat_offset -= bar_sec
+    while first_beat_offset < 0.0:
+        first_beat_offset += bar_sec
+
+    # Check earliest audible sound in the first 1.5s
+    init_samples = int(min(1.5 * sr, len(y)))
+    y_init = y[:init_samples]
+    peak_val = float(np.max(np.abs(y_init))) if len(y_init) > 0 else 0.0
+    thresh = 0.02 * peak_val if peak_val > 0 else 0.001
+    audible_indices = np.where(np.abs(y_init) > thresh)[0]
+    first_audible_time = float(audible_indices[0]) / sr if len(audible_indices) > 0 else 0.0
+
+    # If the back-propagated grid lands within 45ms of 0.0s or `first_audible_time`, snap cleanly
+    if first_beat_offset < 0.045 or (bar_sec - first_beat_offset) < 0.045:
+        first_beat_offset = 0.0
+    elif abs(first_beat_offset - first_audible_time) < 0.045:
+        first_beat_offset = first_audible_time
+
+    return {
+        "bpm": round(float(refined_bpm), 2),
+        "first_beat_offset": round(float(first_beat_offset), 3),
+        "drop_time": round(float(best_drop_time), 3)
+    }
+
+
+def analyze_audio_track(
+    file_path: str,
+    min_bpm: float = 60.0,
+    max_bpm: float = 180.0,
+    drop_anchor_mode: bool = False
 ) -> Dict[str, Any]:
     """
-    Analyzes an audio file to determine:
-    1. Metadata (title, artist, duration, samplerate, etc.)
-    2. Estimated BPM (tempo) using enhanced multi-band & Fourier analysis
-    3. First beat (downbeat) offset in seconds
-    4. Waveform peaks for UI visualization
+    Complete analysis of a single audio file:
+    - Metadata extraction
+    - Waveform peak generation for visual preview
+    - Accurate BPM estimation
+    - First beat / downbeat offset detection (standard or Deep Drop-Anchored mode)
     """
-    meta = extract_metadata(file_path)
-    
-    # Load audio for analysis (22.05kHz mono is optimal for fast beat tracking)
-    try:
-        # Load up to max_duration seconds for fast BPM tracking
-        y, sr = librosa.load(file_path, sr=22050, mono=True, duration=max_duration)
-    except Exception as e:
-        # Fallback to soundfile if librosa default loader fails
-        try:
-            y, sr = sf.read(file_path, dtype='float32')
-            if y.ndim > 1:
-                y = np.mean(y, axis=1)
-            if sr != 22050:
-                y = librosa.resample(y, orig_sr=sr, target_sr=22050)
-                sr = 22050
-            if len(y) > max_duration * sr:
-                y = y[:max_duration * sr]
-        except Exception as e2:
-            raise RuntimeError(f"Could not load audio file '{file_path}': {e} | {e2}")
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Audio file not found: {file_path}")
 
-    # Generate waveform preview peaks
-    peaks = generate_waveform_peaks(y, num_peaks=600)
-    
+    # Extract metadata tags
+    meta = extract_metadata(file_path)
+
+    # Load audio using librosa (mono, sr=22050 is fast and optimal for tempo/beat)
+    y, sr = librosa.load(file_path, sr=22050)
+
+    # Generate waveform peaks (800 points for canvas rendering)
+    peaks = generate_waveform_peaks(y, num_peaks=800)
+
     # If duration wasn't found from metadata, calculate from audio
     if meta["duration"] <= 0.0:
         meta["duration"] = len(y) / sr
@@ -340,45 +745,22 @@ def analyze_audio_track(
         bpm_tag=meta.get("bpm_tag")
     )
 
-    # Compute onset strength envelope and align beat grid with guided accurate BPM
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-    _, beat_frames = librosa.beat.beat_track(
-        y=y,
-        sr=sr,
-        onset_envelope=onset_env,
-        bpm=bpm,
-        units='time',
-        tightness=100
-    )
-
-    # Determine first beat (downbeat / grid origin at track start)
-    first_beat_time = 0.0
-    beat_sec = 60.0 / bpm if bpm > 0 else 0.5
-    bar_sec = beat_sec * 4.0
-
-    if len(beat_frames) > 0:
-        raw_first_beat = float(beat_frames[0])
-        # If the first detected drum beat is after an intro (> 1 beat),
-        # project the beatgrid backwards to the start of the track (0.0s)
-        if raw_first_beat >= beat_sec:
-            # Back-propagate in full 4-beat bars
-            projected_origin = raw_first_beat % bar_sec
-            # If projected origin is near the boundary of a bar, wrap to 0.0
-            if projected_origin > bar_sec - 0.05 or projected_origin < 0.02:
-                projected_origin = 0.0
-            # Ensure origin is within the first beat interval [0.0, beat_sec)
-            while projected_origin >= beat_sec:
-                projected_origin -= beat_sec
-            first_beat_time = max(0.0, round(projected_origin, 3))
-        else:
-            first_beat_time = max(0.0, round(raw_first_beat, 3))
+    drop_time = None
+    if drop_anchor_mode:
+        # Deep Drop-Anchored analysis: detects first drop, refines BPM & locks grid to the drop
+        drop_res = analyze_drop_anchored_grid(
+            y=y,
+            sr=sr,
+            initial_bpm=bpm,
+            min_bpm=min_bpm,
+            max_bpm=max_bpm
+        )
+        bpm = drop_res["bpm"]
+        first_beat_time = drop_res["first_beat_offset"]
+        drop_time = drop_res["drop_time"]
     else:
-        # Fallback to first onset transient if no beat frames were found
-        onsets = librosa.onset.onset_detect(y=y, sr=sr, units='time')
-        if len(onsets) > 0:
-            raw_onset = float(onsets[0])
-            projected_origin = raw_onset % beat_sec if raw_onset >= beat_sec else raw_onset
-            first_beat_time = max(0.0, round(projected_origin, 3))
+        # Standard fast first downbeat detection (Bar 1, Beat 1)
+        first_beat_time = detect_accurate_first_beat(y=y, sr=sr, bpm=bpm)
 
     return {
         "file_path": os.path.abspath(file_path),
@@ -393,6 +775,8 @@ def analyze_audio_track(
         "kind": meta["kind"],
         "bpm": bpm,
         "first_beat_offset": first_beat_time,
+        "drop_time": drop_time,
+        "drop_anchor_mode": drop_anchor_mode,
         "peaks": peaks
     }
 
@@ -407,7 +791,7 @@ def calculate_cue_points(
     max_hot_cues: int = 8,
     max_memory_cues: int = 8,
     color_scheme: str = "default",
-    start_bar: int = 1
+    start_bar: int = 0
 ) -> List[Dict[str, Any]]:
     """
     Calculates cue points positioned every `bar_interval` bars.
@@ -422,7 +806,7 @@ def calculate_cue_points(
     - max_hot_cues: Maximum number of Hot Cues to assign (usually 8 for Pioneer A-H, 0 for unlimited)
     - max_memory_cues: Maximum number of Memory Cues to assign (usually 8, 0 for unlimited)
     - color_scheme: "default", "rainbow", "energy", "single"
-    - start_bar: Starting bar index (default 1 = 1 bar after first beat / start of bar 2)
+    - start_bar: Starting bar index (default 0 = start at first beat / Bar 1, Beat 1)
     """
     if bpm <= 0 or duration <= 0 or bar_interval <= 0:
         return []

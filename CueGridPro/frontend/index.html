@@ -157,6 +157,22 @@
           </select>
         </div>
 
+        <!-- Deep Drop-Anchored Analysis Mode -->
+        <div class="setting-item full-width-setting" style="margin-top: 4px; padding-top: 14px;">
+          <label class="setting-label">
+            Режим точности анализа сетки (Beatgrid &amp; Drop Analysis)
+            <span class="tooltip" title="При включении анализирует трек глубже и дольше: находит первый мощный дроп (вступление баса и бочки), вычисляет эталонный BPM на дропе и отсчитывает сетку от первого дропа к началу трека.">ⓘ</span>
+          </label>
+          <label class="export-checkbox-card drop-anchor-card" title="Глубокий анализ: находит первый дроп в треке и выстраивает всю тактовую сетку и точки, отталкиваясь ровно от первого удара дропа">
+            <input type="checkbox" id="chkDropAnchorMode">
+            <div class="checkbox-indicator"></div>
+            <div class="checkbox-text">
+              <span class="checkbox-title">🔥 Глубокий анализ сетки от Первого Дропа (Drop-Anchored Grid) <span class="badge-pro">PRO Точность</span></span>
+              <span class="checkbox-desc">Анализирует трек дольше: ищет первый дроп (вход саб-баса и бочки), проверяет BPM по дропу и отсчитывает сетку назад к началу трека, чтобы точки (8/16/32 бара) попадали ровно в дроп даже после сложных интро без бочки.</span>
+            </div>
+          </label>
+        </div>
+
         <!-- XML Export Options Group -->
         <div class="setting-item full-width-setting">
           <label class="setting-label">
@@ -214,8 +230,8 @@
             <circle cx="18" cy="16" r="3"/>
           </svg>
         </div>
-        <h3 class="drop-title">Перетащите музыкальные треки сюда</h3>
-        <p class="drop-subtitle">Поддерживаются: MP3, WAV, FLAC, AIFF, M4A, OGG</p>
+        <h3 class="drop-title">Перетащите музыкальные треки или Rekordbox .XML сюда</h3>
+        <p class="drop-subtitle">Поддерживаются аудио (MP3, WAV, FLAC, AIFF, M4A, OGG) и готовая сетка из Rekordbox (<strong>.xml</strong>)</p>
         
         <div class="drop-actions">
           <button id="btnBrowseFiles" class="btn btn-primary">
@@ -231,9 +247,16 @@
             </svg>
             Выбрать папку с музыкой
           </button>
+          <button id="btnImportXml" class="btn btn-accent" title="Загрузить уже проанализированные треки с готовой сеткой и BPM из Rekordbox XML, чтобы сразу расставить Hot и Memory Cues">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="icon-sm">
+              <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+            </svg>
+            Импорт готовой сетки из Rekordbox XML
+          </button>
         </div>
 
-        <input type="file" id="fileInput" multiple accept=".mp3,.wav,.flac,.aiff,.aif,.m4a,.ogg" style="display:none">
+        <input type="file" id="fileInput" multiple accept=".mp3,.wav,.flac,.aiff,.aif,.m4a,.ogg,.xml" style="display:none">
+        <input type="file" id="xmlFileInput" accept=".xml" style="display:none">
       </div>
     </section>
 
